@@ -8,6 +8,7 @@ export default function Keuangan({ currentUser, showToast }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
 
   const profit = omzet - (ops + gaji);
 
@@ -18,8 +19,14 @@ export default function Keuangan({ currentUser, showToast }) {
   const loadHistory = async () => {
     if (currentUser?.role !== 'manager') return;
     setLoading(true);
-    const data = await api.getFinance();
-    setHistory(data);
+    setError(null);
+    try {
+      const data = await api.getFinance();
+      setHistory(data);
+    } catch (err) {
+      console.error(err);
+      setError("Gagal memuat riwayat keuangan.");
+    }
     setLoading(false);
   };
 
@@ -42,18 +49,22 @@ export default function Keuangan({ currentUser, showToast }) {
       note: 'Laporan Harian via React App'
     };
     
-    const res = await api.addFinance(data);
-    setSaving(false);
-    
-    if (res.success) {
-      showToast('Laporan Tersimpan ke Sheet!');
-      setOmzet(0);
-      setOps(0);
-      setGaji(0);
-      loadHistory();
-    } else {
-      showToast('Gagal menyimpan laporan', true);
+    try {
+      const res = await api.addFinance(data);
+      if (res && res.success) {
+        showToast('Laporan Tersimpan ke Sheet!');
+        setOmzet(0);
+        setOps(0);
+        setGaji(0);
+        loadHistory();
+      } else {
+        throw new Error("Save failed");
+      }
+    } catch (e) {
+      console.error(e);
+      showToast('Gagal menyimpan laporan. Cek koneksi.', true);
     }
+    setSaving(false);
   };
 
   return (
@@ -121,6 +132,12 @@ export default function Keuangan({ currentUser, showToast }) {
                   <button onClick={loadHistory} className="text-xs text-emerald-600 hover:underline">Refresh</button>
               </div>
               
+              {error && (
+                <div className="bg-red-50 text-red-600 p-3 rounded text-xs mb-3 border border-red-200">
+                  {error}
+                </div>
+              )}
+
               <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
                 {loading ? (
                     <div className="text-center text-stone-400 text-sm py-4">Memuat data...</div>

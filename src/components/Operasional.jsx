@@ -6,6 +6,7 @@ import { id } from 'date-fns/locale';
 export default function Operasional({ currentUser, showToast }) {
   const [checklist, setChecklist] = useState({});
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const today = new Date().toISOString().split('T')[0];
   const displayDate = format(new Date(), 'EEEE, d MMMM yyyy', { locale: id });
 
@@ -15,8 +16,15 @@ export default function Operasional({ currentUser, showToast }) {
 
   const loadChecklist = async () => {
     setLoading(true);
-    const data = await api.getChecklist(today);
-    setChecklist(data.items || {});
+    setError(null);
+    try {
+      const data = await api.getChecklist(today);
+      setChecklist(data.items || {});
+    } catch (err) {
+      console.error(err);
+      setError("Gagal memuat checklist. Cek koneksi atau URL Script.");
+      showToast("Gagal memuat data", true);
+    }
     setLoading(false);
   };
 
@@ -38,17 +46,26 @@ export default function Operasional({ currentUser, showToast }) {
     }));
 
     // API Call
-    const res = await api.updateChecklist({
-      date: today,
-      item_id: itemId,
-      checked: isChecked,
-      by: currentUser.name,
-      time: timestamp
-    });
-
-    if (!res.success) {
+    try {
+      const res = await api.updateChecklist({
+        date: today,
+        item_id: itemId,
+        checked: isChecked,
+        by: currentUser.name,
+        time: timestamp
+      });
+      
+      if (res && res.success === false) {
+          throw new Error("Update failed");
+      }
+    } catch (e) {
+      console.error(e);
       showToast('Gagal menyimpan data ke Sheet', true);
-      // Revert if needed, but keeping it simple for now
+      // Revert optimistic update (optional, but good practice)
+      setChecklist(prev => ({
+        ...prev,
+        [itemId]: { ...prev[itemId], checked: !isChecked } // simple revert
+      }));
     }
   };
 
@@ -76,6 +93,12 @@ export default function Operasional({ currentUser, showToast }) {
         {loading && (
           <div className="absolute inset-0 bg-white/50 flex items-center justify-center z-10">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600"></div>
+          </div>
+        )}
+
+        {error && (
+          <div className="bg-red-50 text-red-700 p-4 rounded-lg mb-4 border border-red-200">
+            <strong>Error:</strong> {error}
           </div>
         )}
         

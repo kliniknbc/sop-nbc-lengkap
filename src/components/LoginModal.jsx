@@ -6,6 +6,7 @@ export default function LoginModal({ isOpen, onClose, onLogin }) {
   const [role, setRole] = useState('terapis');
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -15,8 +16,15 @@ export default function LoginModal({ isOpen, onClose, onLogin }) {
 
   const loadUsers = async () => {
     setLoading(true);
-    const data = await api.getUsers();
-    setUsers(data);
+    setError(null);
+    try {
+      const data = await api.getUsers();
+      setUsers(data);
+    } catch (err) {
+      console.error(err);
+      setError('Gagal memuat data user. Cek koneksi internet.');
+      setUsers([]);
+    }
     setLoading(false);
   };
 
@@ -52,6 +60,7 @@ export default function LoginModal({ isOpen, onClose, onLogin }) {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-bold text-stone-700 mb-1">Pilih User Tersimpan</label>
+            {error && <div className="text-red-500 text-xs mb-2">{error}</div>}
             <select 
               onChange={handleUserSelect}
               className="w-full p-3 border border-stone-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-stone-50"
