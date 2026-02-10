@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOP Digital - Rumah Sehat Bekam NBC (Cloud)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, addDoc, query, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- 1. Firebase Configuration & Init ---
+        const firebaseConfig = JSON.parse(localStorage.getItem('firebase_config_override') || JSON.stringify(window.__firebase_config || {}));
+        if (!window.__firebase_config) {
+             console.warn("Firebase config not found in environment. App may not save data.");
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // --- Global State ---
+        let currentUserProfile = null; // { name: '', role: '' }
+        let currentUserId = null;
+
+        // Utility: profile storage (local + Firestore)
+        const PROFILES_KEY = 'sop_user_profiles_v1';
+        function loadProfiles() {
+            try { return JSON.parse(localStorage.getItem(PROFILES_KEY) || '{}'); } catch { return {}; }
+        }
+        function saveProfileForUid(uid, profile) {
+            // save locally
+            const all = loadProfiles();
+            all[uid] = profile;
+            localStorage.setItem(PROFILES_KEY, JSON.stringify(all));
+            // also save to Firestore (best-effort)
+            if (uid && db) saveProfileToFirestore(uid, profile).catch(e => console.warn('Firestore save profile failed', e));
+        }
+        function getProfileForUid(uid) {
+            return loadProfiles()[uid] || null;
+        }
+
+        // Remote profiles cache
+        let remoteProfiles = {}; // { uid: {name, role, updated} }
+
+        // Firestore helpers for profiles
+        async function saveProfileToFirestore(uid, profile) {
+            if (!uid) throw new Error('No uid');
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'private', 'users', uid);
+                await setDoc(docRef, { name: profile.name, role: profile.role, updated: serverTimestamp() }, { merge: true });
+            } catch (e) { throw e; }
+        }
+
+        function fetchProfilesFromFirestore() {
+            try {
+                const colRef = collection(db, 'artifacts', appId, 'private', 'users');
+                onSnapshot(colRef, (snapshot) => {
+                    const map = {};
+                    snapshot.forEach(d => { map[d.id] = { ...(d.data() || {}) }; });
+                    remoteProfiles = map;
+                    populateSavedProfilesSelect();
+                }, (err) => { console.warn('Error listening profiles:', err); });
+            } catch (e) { console.warn('fetchProfilesFromFirestore error', e); }
+        }
+
+        // Run UI and auth init after DOM ready to ensure elements exist
+        window.addEventListener('DOMContentLoaded', () => {
+            const loginModal = document.getElementById('loginModal');
+            const appContent = document.getElementById('appContent');
+            const loginForm = document.getElementById('loginForm');
+            const savedProfilesSelect = document.getElementById('savedProfilesSelect');
+
+            // Initial Auth: sign in anonymously to obtain a stable UID for this browser
+            const initAuth = async () => {
+                try { await signInAnonymously(auth); } catch (e) { console.warn('Auth init failed', e); }
+            };
+            initAuth();
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    currentUserId = user.uid;
+                    const existing = getProfileForUid(currentUserId);
+                    if (existing) {
+                        applyProfile(existing);
+                        setupRealtimeListeners();
+                    } else {
+                        // show login modal to pick/create profile
+                        openLoginModal();
+                    }
+                    populateSavedProfilesSelect();
+                    // start listening to remote profiles for multi-user sync
+                    fetchProfilesFromFirestore();
+                }
+            });
+
+            // Show/hide modal helpers
+            window.openLoginModal = () => {
+                populateSavedProfilesSelect();
+                loginModal.classList.remove('hidden');
+                appContent.classList.add('blur-sm', 'pointer-events-none');
+            };
+            window.closeLoginModal = () => {
+                loginModal.classList.add('hidden');
+                appContent.classList.remove('blur-sm', 'pointer-events-none');
+            };
+
+            // Populate saved profiles dropdown (for multi-user switch)
+            function populateSavedProfilesSelect() {
+                const local = loadProfiles();
+                if (!savedProfilesSelect) return;
+                savedProfilesSelect.innerHTML = '<option value="">-- Pilih Profil Tersimpan --</option>';
+
+                // Merge remoteProfiles first (so latest from server shows)
+                Object.keys(remoteProfiles).forEach(uid => {
+                    const p = remoteProfiles[uid];
+                    const opt = document.createElement('option');
+                    opt.value = uid;
+                    opt.text = `${p.name || 'User'} (${p.role || 'unknown'})`;
+                    savedProfilesSelect.appendChild(opt);
+                });
+
+                // Then add any local-only profiles
+                Object.keys(local).forEach(uid => {
+                    if (remoteProfiles[uid]) return; // already listed
+                    const p = local[uid];
+                    const opt = document.createElement('option');
+                    opt.value = uid;
+                    opt.text = `${p.name} (${p.role})`;
+                    savedProfilesSelect.appendChild(opt);
+                });
+            }
+
+            // When selecting a saved profile, autofill fields (prefer remote)
+            if (savedProfilesSelect) {
+                savedProfilesSelect.addEventListener('change', (ev) => {
+                    const uid = ev.target.value;
+                    if (!uid) return;
+                    const p = remoteProfiles[uid] || getProfileForUid(uid);
+                    if (p) {
+                        document.getElementById('loginName').value = p.name || '';
+                        document.getElementById('loginRole').value = p.role || 'terapis';
+                    }
+                });
+            }
+
+            // Handle Login Submission
+            window.handleLoginSubmit = (e) => {
+                e.preventDefault();
+                const name = document.getElementById('loginName').value.trim();
+                const role = document.getElementById('loginRole').value;
+
+                if (!name || !role) return showToast('Isi nama dan peran', true);
+
+                currentUserProfile = { name, role };
+                if (currentUserId) saveProfileForUid(currentUserId, currentUserProfile);
+
+                applyProfile(currentUserProfile);
+                closeLoginModal();
+                showToast(`Selamat datang, ${name}!`);
+                setupRealtimeListeners();
+            };
+
+            // Allow logout (clears current profile for this UID only)
+            window.handleLogout = () => {
+                if (!currentUserId) return;
+                const all = loadProfiles();
+                delete all[currentUserId];
+                localStorage.setItem(PROFILES_KEY, JSON.stringify(all));
+                currentUserProfile = null;
+                document.getElementById('displayNama').innerText = 'Tamu';
+                document.getElementById('displayRole').innerText = 'Silakan Login';
+                openLoginModal();
+                showToast('Anda telah keluar');
+            };
+
+            function applyProfile(profile) {
+                currentUserProfile = profile;
+                document.getElementById('displayNama').innerText = profile.name;
+                document.getElementById('displayRole').innerText = profile.role === 'manager' ? 'Manager' : 'Terapis';
+                // Toggle finance section visibility
+                if (profile.role === 'manager') document.getElementById('financeHistorySection').classList.remove('hidden');
+                else document.getElementById('financeHistorySection').classList.add('hidden');
+            }
+
+            // Expose helper to populate saved profiles on load
+            populateSavedProfilesSelect();
+        });
+
+        // --- Helper functions usable after DOM load ---
+        const getTodayId = () => {
+            const today = new Date();
+            return today.toISOString().split('T')[0];
+        };
+
+        async function setupRealtimeListeners() {
+            if (!currentUserId || !currentUserProfile) return;
+            const todayId = getTodayId();
+            const opsDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'daily_ops', todayId);
+
+            onSnapshot(opsDocRef, (docSnap) => {
+                if (docSnap.exists()) updateChecklistUI(docSnap.data()); else updateChecklistUI({});
+            }, (error) => console.error('Error watching ops:', error));
+
+            if (currentUserProfile.role === 'manager') {
+                const financeColRef = collection(db, 'artifacts', appId, 'public', 'data', 'finance_reports');
+                onSnapshot(financeColRef, (snapshot) => {
+                    const reports = [];
+                    snapshot.forEach(doc => reports.push({ id: doc.id, ...doc.data() }));
+                    reports.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
+                    renderFinanceHistory(reports);
+                }, (error) => console.error('Error watching finance:', error));
+            }
+        }
+
+        window.toggleChecklistItem = async (itemId, isChecked) => {
+            if (!currentUserId || !currentUserProfile) return;
+            const todayId = getTodayId();
+            const opsDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'daily_ops', todayId);
+            const updateData = {};
+            updateData[itemId] = { checked: isChecked, by: currentUserProfile.name, time: new Date().toLocaleTimeString() };
+            try { await setDoc(opsDocRef, updateData, { merge: true }); } catch (e) { console.error('Error updating checklist:', e); showToast('Gagal menyimpan data', true); }
+        };
+
+        window.saveFinanceReport = async () => {
+            if (!currentUserId || !currentUserProfile) return;
+            const omzet = document.getElementById('inputOmzet').value;
+            const profitText = document.getElementById('resultProfit').innerText;
+            const reportData = { date: new Date().toLocaleDateString(), timestamp: serverTimestamp(), omzet: omzet, profit_display: profitText, saved_by: currentUserProfile.name, note: 'Laporan Harian' };
+            try { await addDoc(collection(db, appId, 'public', 'data', 'finance_reports'), reportData); showToast('Laporan Keuangan Tersimpan!'); } catch (e) { console.error('Error saving finance:', e); showToast('Gagal menyimpan laporan', true); }
+        };
+
+        function updateChecklistUI(data) {
+            const checkboxes = document.querySelectorAll('.ops-checkbox');
+            checkboxes.forEach(cb => {
+                const itemId = cb.dataset.id;
+                const itemData = data[itemId];
+                cb.checked = itemData?.checked || false;
+                const labelSpan = document.getElementById(`label-${itemId}`);
+                if (itemData?.checked) labelSpan.innerHTML = `<span class="text-xs text-emerald-600 font-bold ml-2">✓ ${itemData.by} (${itemData.time})</span>`; else labelSpan.innerHTML = '';
+            });
+        }
+
+        function renderFinanceHistory(reports) {
+            const container = document.getElementById('financeHistoryList');
+            if (!container) return;
+            container.innerHTML = '';
+            if (reports.length === 0) { container.innerHTML = '<div class="text-stone-400 text-sm italic">Belum ada laporan tersimpan.</div>'; return; }
+            reports.slice(0, 5).forEach(report => {
+                const div = document.createElement('div');
+                div.className = 'flex justify-between items-center p-3 bg-stone-50 rounded border border-stone-200 text-sm';
+                div.innerHTML = `<div><div class="font-bold text-stone-700">${report.date}</div><div class="text-xs text-stone-500">Oleh: ${report.saved_by}</div></div><div class="font-bold text-emerald-600">${report.profit_display}</div>`;
+                container.appendChild(div);
+            });
+        }
+
+        window.showToast = (msg, isError = false) => {
+            const toast = document.getElementById('toast');
+            toast.innerText = msg;
+            toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg text-white transform transition-all duration-300 z-50 ${isError ? 'bg-red-600' : 'bg-emerald-600'}`;
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => { toast.classList.add('translate-y-20', 'opacity-0'); }, 3000);
+        };
+
+    </script>
+
+    <style>
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin: 0 auto;
+            height: 300px;
+            max-height: 400px;
+        }
+        @media (min-width: 768px) { .chart-container { height: 350px; } }
+        html { scroll-behavior: smooth; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .nav-active { background-color: #ecfdf5; color: #047857; font-weight: 600; border-right: 4px solid #059669; }
+    </style>
+</head>
+<body class="bg-stone-50 text-stone-800 font-sans antialiased selection:bg-emerald-200 selection:text-emerald-900">
+
+    <!-- Login Modal (Overlay) -->
+    <div id="loginModal" class="fixed inset-0 bg-stone-900/80 z-[100] flex items-center justify-center backdrop-blur-sm hidden">
+        <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md border-t-4 border-emerald-500 animate-bounce-in">
+            <div class="text-center mb-6">
+                <div class="text-4xl mb-2">🔐</div>
+                <h2 class="text-2xl font-bold text-stone-800">Login Sistem SOP</h2>
+                <p class="text-stone-500 text-sm">Masuk untuk menyimpan progress kerja.</p>
+            </div>
+            <form id="loginForm" onsubmit="handleLoginSubmit(event)">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-bold text-stone-700 mb-1">Pilih Profil Tersimpan (opsional)</label>
+                        <select id="savedProfilesSelect" class="w-full p-3 border border-stone-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                            <option value="">-- Tidak memilih --</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold text-stone-700 mb-1">Nama Anda</label>
+                        <input type="text" id="loginName" required placeholder="Contoh: Ahmad" class="w-full p-3 border border-stone-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold text-stone-700 mb-1">Peran / Jabatan</label>
+                        <select id="loginRole" class="w-full p-3 border border-stone-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                            <option value="terapis">Terapis / Staff</option>
+                            <option value="manager">Manager / Owner</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg transition shadow-lg transform hover:-translate-y-0.5">
+                        Masuk Sistem
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg text-white transform translate-y-20 opacity-0 transition-all duration-300 z-50"></div>
+
+    <!-- Main App Wrapper -->
+    <div id="appContent" class="flex h-screen overflow-hidden transition-all duration-500">
+        
+        <!-- Sidebar Navigation -->
+        <aside id="sidebar" class="bg-white w-72 border-r border-stone-200 hidden lg:flex flex-col h-full absolute lg:relative z-40 shadow-xl lg:shadow-none transition-transform duration-300">
+            <div class="p-6 border-b border-stone-100 flex-shrink-0">
+                <div class="text-2xl font-bold text-emerald-700 tracking-tight">RUMAH SEHAT <br><span class="text-stone-600 text-lg">Bekam NBC</span></div>
+                <div class="flex items-center gap-2 mt-3 bg-emerald-50 p-2 rounded-lg border border-emerald-100">
+                    <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                    <div class="text-xs">
+                        <div class="font-bold text-emerald-800" id="displayNama">Tamu</div>
+                        <div class="text-emerald-600" id="displayRole">Silakan Login</div>
+                    </div>
+                    <div class="ml-auto flex items-center gap-2">
+                        <button onclick="openLoginModal()" class="text-xs text-emerald-700 bg-emerald-100 px-2 py-1 rounded">Ganti User</button>
+                        <button onclick="handleLogout()" class="text-xs text-stone-500 bg-stone-100 px-2 py-1 rounded">Keluar</button>
+                    </div>
+                </div>
+            </div>
+            
+            <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1 custom-scrollbar">
+                <button onclick="showSection('dashboard')" class="w-full text-left px-4 py-3 rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition flex items-center gap-3 font-medium text-stone-600 nav-main-btn" data-target="dashboard">
+                    <span>🏠</span> Dashboard
+                </button>
+                
+                <div class="pt-4 pb-2 px-4 text-xs font-bold text-stone-400 uppercase tracking-wider">SOP & Log Kerja</div>
+
+                <!-- Operasional Menu -->
+                <button onclick="showSection('operasional')" class="w-full text-left px-4 py-3 rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition flex items-center justify-between font-medium text-stone-600 nav-main-btn" data-target="operasional">
+                    <div class="flex items-center gap-3"><span>🩺</span> Operasional (Checklist)</div>
+                </button>
+
+                <!-- Keuangan Menu -->
+                <button onclick="showSection('keuangan')" class="w-full text-left px-4 py-3 rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition flex items-center justify-between font-medium text-stone-600 nav-main-btn" data-target="keuangan">
+                    <div class="flex items-center gap-3"><span>💰</span> Keuangan (Laporan)</div>
+                </button>
+
+                <!-- Static Pages (CS/MKT/SDM) -->
+                <button onclick="showSection('cs')" class="w-full text-left px-4 py-3 rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition flex items-center gap-3 font-medium text-stone-600 nav-main-btn" data-target="cs">
+                    <span>🎧</span> Customer Service
+                </button>
+                <button onclick="showSection('marketing')" class="w-full text-left px-4 py-3 rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition flex items-center gap-3 font-medium text-stone-600 nav-main-btn" data-target="marketing">
+                    <span>📢</span> Marketing
+                </button>
+                <button onclick="showSection('sdm')" class="w-full text-left px-4 py-3 rounded-lg hover:bg-emerald-50 hover:text-emerald-700 transition flex items-center gap-3 font-medium text-stone-600 nav-main-btn" data-target="sdm">
+                    <span>👥</span> SDM
+                </button>
+            </nav>
+            <div class="p-4 border-t border-stone-200 text-xs text-center text-stone-400">
+                Versi Cloud 2.0 • Auto-Sync On
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 h-full overflow-y-auto bg-stone-50 p-4 lg:p-8 relative scroll-smooth" id="mainContent">
+            <!-- Mobile Toggle -->
+            <div class="lg:hidden mb-6 flex justify-between items-center">
+                <h1 class="font-bold text-emerald-800">NBC Cloud System</h1>
+                <button onclick="document.getElementById('sidebar').classList.toggle('hidden')" class="p-2 border rounded">☰</button>
+            </div>
+
+            <!-- DASHBOARD -->
+            <section id="dashboard" class="content-section animate-fade-in block">
+                <div class="bg-gradient-to-r from-emerald-600 to-teal-600 rounded-2xl shadow-lg p-8 text-white mb-8">
+                    <h2 class="text-3xl font-bold mb-2">Dashboard Operasional</h2>
+                    <p class="opacity-90">Sistem terhubung ke Cloud. Data tersimpan otomatis.</p>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="bg-white p-6 rounded-xl shadow-sm border border-stone-200 cursor-pointer hover:border-emerald-500 transition" onclick="showSection('operasional')">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="font-bold text-stone-700">📋 Checklist Harian</h3>
+                            <span class="bg-emerald-100 text-emerald-800 text-xs px-2 py-1 rounded-full">Live Sync</span>
+                        </div>
+                        <p class="text-sm text-stone-500">Pantau kebersihan dan persiapan outlet secara real-time.</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border border-stone-200 cursor-pointer hover:border-emerald-500 transition" onclick="showSection('keuangan')">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="font-bold text-stone-700">📊 Laporan Keuangan</h3>
+                            <span class="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full">Cloud Save</span>
+                        </div>
+                        <p class="text-sm text-stone-500">Hitung laba harian dan simpan ke database.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- OPERASIONAL (With Real-time Checklist) -->
+            <section id="operasional" class="content-section hidden animate-fade-in space-y-6">
+                <div class="border-b pb-4 border-stone-200 flex justify-between items-center">
+                    <div>
+                        <h2 class="text-3xl font-bold text-stone-800">Operasional Outlet</h2>
+                        <p class="text-stone-500 text-sm">Checklist ini direset otomatis setiap hari.</p>
+                    </div>
+                    <div class="text-right hidden md:block">
+                        <div class="text-xs text-stone-400 font-mono">ID: <span id="todayDateDisplay"></span></div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm p-6 border-t-4 border-emerald-500">
+                    <h3 class="text-xl font-bold text-stone-800 mb-4">1.1 Persiapan Outlet (08:00 WIB)</h3>
+                    <div class="space-y-4" id="checklistContainer">
+                        <!-- Checkbox Items with Data Attributes -->
+                        <label class="flex items-center gap-3 p-3 bg-stone-50 rounded-lg border border-stone-100 hover:border-emerald-300 transition cursor-pointer">
+                            <input type="checkbox" data-id="clean_floor" class="ops-checkbox w-6 h-6 text-emerald-600 rounded focus:ring-emerald-500" onchange="toggleChecklistItem('clean_floor', this.checked)">
+                            <div class="flex-1">
+                                <span class="text-stone-800 font-medium">Sapu & Pel seluruh area dengan disinfektan</span>
+                                <div id="label-clean_floor" class="text-xs mt-1"></div>
+                            </div>
+                        </label>
+                        
+                        <label class="flex items-center gap-3 p-3 bg-stone-50 rounded-lg border border-stone-100 hover:border-emerald-300 transition cursor-pointer">
+                            <input type="checkbox" data-id="aromatherapy" class="ops-checkbox w-6 h-6 text-emerald-600 rounded focus:ring-emerald-500" onchange="toggleChecklistItem('aromatherapy', this.checked)">
+                            <div class="flex-1">
+                                <span class="text-stone-800 font-medium">Nyalakan diffuser (Sereh/Lavender)</span>
+                                <div id="label-aromatherapy" class="text-xs mt-1"></div>
+                            </div>
+                        </label>
+
+                        <label class="flex items-center gap-3 p-3 bg-stone-50 rounded-lg border border-stone-100 hover:border-emerald-300 transition cursor-pointer">
+                            <input type="checkbox" data-id="stock_check" class="ops-checkbox w-6 h-6 text-emerald-600 rounded focus:ring-emerald-500" onchange="toggleChecklistItem('stock_check', this.checked)">
+                            <div class="flex-1">
+                                <span class="text-stone-800 font-medium">Cek stok (Alkohol, Kassa, Jarum, Kop)</span>
+                                <div id="label-stock_check" class="text-xs mt-1"></div>
+                            </div>
+                        </label>
+
+                        <label class="flex items-center gap-3 p-3 bg-stone-50 rounded-lg border border-stone-100 hover:border-emerald-300 transition cursor-pointer">
+                            <input type="checkbox" data-id="briefing" class="ops-checkbox w-6 h-6 text-emerald-600 rounded focus:ring-emerald-500" onchange="toggleChecklistItem('briefing', this.checked)">
+                            <div class="flex-1">
+                                <span class="text-stone-800 font-medium">Briefing Pagi: Doa & Review Target</span>
+                                <div id="label-briefing" class="text-xs mt-1"></div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Static Guide for Therapy -->
+                <div class="bg-stone-100 p-6 rounded-xl">
+                     <h3 class="font-bold text-stone-700 mb-2">Panduan Cepat Terapi</h3>
+                     <ul class="list-disc ml-5 text-sm text-stone-600 space-y-1">
+                        <li>Diagnosa Awal (Tensi Wajib > 90/60)</li>
+                        <li>Sterilisasi tangan & alat (Wajib Gloves)</li>
+                        <li>Limbah jarum masuk Safety Box Kuning</li>
+                     </ul>
+                </div>
+            </section>
+
+            <!-- KEUANGAN (With Cloud Save) -->
+            <section id="keuangan" class="content-section hidden animate-fade-in space-y-8">
+                <div class="border-b pb-4 border-stone-200">
+                    <h2 class="text-3xl font-bold text-stone-800">Laporan Keuangan</h2>
+                    <p class="text-stone-500 mt-2">Hitung dan simpan laporan ke server.</p>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <!-- Calculator -->
+                    <div class="bg-white p-6 rounded-xl shadow-sm border border-stone-200">
+                        <h3 class="font-bold text-stone-800 mb-4 flex items-center gap-2">🧮 Simulator Laba Bersih</h3>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-bold text-stone-500 mb-1">Total Omzet Hari Ini</label>
+                                <input type="number" id="inputOmzet" class="w-full p-2 border border-stone-300 rounded bg-stone-50 font-bold text-lg" value="0" oninput="calculateProfit()">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-bold text-stone-500 mb-1">Biaya Ops (Listrik/Makan)</label>
+                                    <input type="number" id="inputOps" class="w-full p-2 border border-stone-300 rounded bg-stone-50" value="0" oninput="calculateProfit()">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-stone-500 mb-1">Gaji/Komisi Terapis</label>
+                                    <input type="number" id="inputGaji" class="w-full p-2 border border-stone-300 rounded bg-stone-50" value="0" oninput="calculateProfit()">
+                                </div>
+                            </div>
+                            <div class="pt-4 border-t border-stone-100 bg-emerald-50 p-4 rounded-lg text-center">
+                                <label class="block text-xs font-bold text-emerald-800 mb-1">PROFIT BERSIH</label>
+                                <div id="resultProfit" class="text-3xl font-bold text-emerald-600">Rp 0</div>
+                            </div>
+                            
+                            <button onclick="saveFinanceReport()" class="w-full bg-stone-800 hover:bg-stone-900 text-white font-bold py-3 rounded-lg flex justify-center items-center gap-2 transition">
+                                <span>💾</span> Simpan Laporan ke Cloud
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- History (Visible only to Manager usually, but shown for demo) -->
+                    <div id="financeHistorySection" class="bg-white p-6 rounded-xl shadow-sm border border-stone-200 hidden">
+                        <h3 class="font-bold text-stone-800 mb-4">Riwayat Laporan (Cloud)</h3>
+                        <div id="financeHistoryList" class="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                            <div class="text-center text-stone-400 text-sm py-4">Memuat data...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Static Sections (CS/Marketing/SDM) - Placeholder content kept simple -->
+            <section id="cs" class="content-section hidden animate-fade-in">
+                <h2 class="text-3xl font-bold mb-4">Customer Service</h2>
+                <div class="bg-white p-6 rounded-xl shadow-sm"><p>Gunakan script standar 5S: Senyum, Salam, Sapa, Sopan, Santun.</p></div>
+            </section>
+            <section id="marketing" class="content-section hidden animate-fade-in">
+                <h2 class="text-3xl font-bold mb-4">Marketing</h2>
+                <div class="bg-white p-6 rounded-xl shadow-sm"><p>Target Harian: 1 Feed, 3 Story. Broadcast WA max 1x seminggu.</p></div>
+            </section>
+            <section id="sdm" class="content-section hidden animate-fade-in">
+                <h2 class="text-3xl font-bold mb-4">SDM</h2>
+                <div class="bg-white p-6 rounded-xl shadow-sm"><p>Terapis wajib menjaga wudhu dan shalat tepat waktu.</p></div>
+            </section>
+
+        </main>
+    </div>
+
+    <script>
+        // --- General UI Logic ---
+        document.getElementById('todayDateDisplay').innerText = new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+        function showSection(id) {
+            document.querySelectorAll('.content-section').forEach(el => el.classList.add('hidden'));
+            document.getElementById(id).classList.remove('hidden');
+            
+            // Sidebar active state
+            document.querySelectorAll('.nav-main-btn').forEach(btn => {
+                btn.classList.remove('nav-active', 'text-emerald-700');
+                btn.classList.add('text-stone-600');
+                if (btn.dataset.target === id) {
+                    btn.classList.add('nav-active', 'text-emerald-700');
+                }
+            });
+
+            // Mobile sidebar close
+            if(window.innerWidth < 1024) document.getElementById('sidebar').classList.add('hidden');
+        }
+
+        function calculateProfit() {
+            const omzet = parseFloat(document.getElementById('inputOmzet').value) || 0;
+            const ops = parseFloat(document.getElementById('inputOps').value) || 0;
+            const gaji = parseFloat(document.getElementById('inputGaji').value) || 0;
+            const profit = omzet - (ops + gaji);
+            document.getElementById('resultProfit').innerText = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(profit);
+        }
+
+        // Init
+        showSection('dashboard');
+    </script>
+</body>
+</html>
