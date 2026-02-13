@@ -4,6 +4,8 @@ import Dashboard from './components/Dashboard';
 import Operasional from './components/Operasional';
 import Keuangan from './components/Keuangan';
 import LoginModal from './components/LoginModal';
+import Settings from './components/Settings';
+import GenericList from './components/GenericList'; // New
 import { Menu } from 'lucide-react';
 
 function App() {
@@ -50,19 +52,44 @@ function App() {
       case 'dashboard': return <Dashboard setActiveTab={setActiveTab} />;
       case 'operasional': return <Operasional currentUser={currentUser} showToast={showToast} />;
       case 'keuangan': return <Keuangan currentUser={currentUser} showToast={showToast} />;
-      case 'cs': return <div className="p-8 bg-white rounded-xl shadow-sm">Customer Service: Gunakan 5S (Senyum, Salam, Sapa, Sopan, Santun).</div>;
-      case 'marketing': return <div className="p-8 bg-white rounded-xl shadow-sm">Marketing: Target 1 Feed, 3 Story per hari.</div>;
-      case 'sdm': return <div className="p-8 bg-white rounded-xl shadow-sm">SDM: Jaga wudhu dan shalat tepat waktu.</div>;
+      case 'cs': return (
+        <GenericList
+          title="Customer Service Scripts"
+          category="cs"
+          placeholder="Tambah script/panduan CS baru..."
+          currentUser={currentUser}
+          showToast={showToast}
+        />
+      );
+      case 'marketing': return (
+        <GenericList
+          title="Marketing Targets & Ideas"
+          category="marketing"
+          placeholder="Tambah target/campaign baru..."
+          currentUser={currentUser}
+          showToast={showToast}
+        />
+      );
+      case 'sdm': return (
+        <GenericList
+          title="SDM & HR Guidelines"
+          category="sdm"
+          placeholder="Tambah aturan/pengumuman baru..."
+          currentUser={currentUser}
+          showToast={showToast}
+        />
+      );
+      case 'settings': return <Settings showToast={showToast} />;
       default: return <Dashboard setActiveTab={setActiveTab} />;
     }
   };
 
   return (
     <div className="flex h-screen overflow-hidden bg-stone-50 text-stone-800 font-sans antialiased selection:bg-emerald-200 selection:text-emerald-900">
-      
+
       {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
-        <div 
+        <div
           className="fixed inset-0 bg-black/50 z-30 lg:hidden"
           onClick={() => setIsSidebarOpen(false)}
         />
@@ -70,8 +97,8 @@ function App() {
 
       {/* Sidebar */}
       <div className={`fixed lg:relative z-40 h-full transition-transform duration-300 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
-        <Sidebar 
-          activeTab={activeTab} 
+        <Sidebar
+          activeTab={activeTab}
           setActiveTab={(tab) => { setActiveTab(tab); setIsSidebarOpen(false); }}
           currentUser={currentUser}
           onLogout={handleLogout}
@@ -94,17 +121,16 @@ function App() {
         </div>
       </main>
 
-      <LoginModal 
-        isOpen={isLoginModalOpen} 
-        onClose={() => setIsLoginModalOpen(false)} 
-        onLogin={handleLogin} 
+      <LoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
+        onLogin={handleLogin}
       />
 
       {/* Toast */}
-      <div 
-        className={`fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg text-white transform transition-all duration-300 z-50 ${
-          toast.isError ? 'bg-red-600' : 'bg-emerald-600'
-        } ${toast.show ? 'translate-y-0 opacity-100' : 'translate-y-20 opacity-0'}`}
+      <div
+        className={`fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg text-white transform transition-all duration-300 z-50 ${toast.isError ? 'bg-red-600' : 'bg-emerald-600'
+          } ${toast.show ? 'translate-y-0 opacity-100' : 'translate-y-20 opacity-0'}`}
       >
         {toast.message}
       </div>

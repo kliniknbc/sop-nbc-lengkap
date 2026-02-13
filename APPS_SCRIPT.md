@@ -9,6 +9,7 @@ Untuk menghubungkan aplikasi React ini dengan Google Sheets, ikuti langkah berik
    - **Users** (Header baris 1: `uid`, `name`, `role`, `updated_at`)
    - **Checklist** (Header baris 1: `date`, `item_id`, `checked`, `by`, `time`, `timestamp`)
    - **Finance** (Header baris 1: `id`, `date`, `omzet`, `ops`, `gaji`, `profit`, `saved_by`, `timestamp`, `note`)
+   - **MasterData** (Header baris 1: `id`, `category`, `content`, `timestamp`)
 
 ## 2. Pasang Script
 1. Di Google Sheet, klik menu **Extensions** > **Apps Script**.
@@ -26,6 +27,8 @@ Untuk menghubungkan aplikasi React ini dengan Google Sheets, ikuti langkah berik
 8. Simpan URL ini untuk dimasukkan ke aplikasi React nanti.
 
 ---
+
+## Kode Apps Script (Code.gs)
 
 ## Kode Apps Script (Code.gs)
 
@@ -49,9 +52,6 @@ function handleRequest(e) {
     "Content-Type": "application/json"
   };
 
-  // Handle preflight options (jika browser mengirimnya, meski GAS jarang handle ini dengan benar)
-  // Biasanya GAS handle POST via form-data atau text/plain untuk hindari preflight complex
-  
   try {
     const action = e.parameter.action;
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -65,15 +65,27 @@ function handleRequest(e) {
       result = getChecklist(ss, date);
     } else if (action === "getFinance") {
       result = getData(ss, "Finance");
-      // Sort desc by timestamp if needed, but simple array is fine
-      result.data.reverse(); // Newest first
+      result.data.reverse(); 
+    } else if (action === "getMasterData") {
+      const category = e.parameter.category;
+      result = getMasterData(ss, category);
     } else if (action === "updateChecklist") {
-      // Expecting JSON body in POST
       const body = JSON.parse(e.postData.contents);
       result = updateChecklist(ss, body);
     } else if (action === "addFinance") {
       const body = JSON.parse(e.postData.contents);
       result = addFinance(ss, body);
+    } else if (action === "addUser") {
+      const body = JSON.parse(e.postData.contents);
+      result = addUser(ss, body);
+    } else if (action === "addData") {
+      // Generic Add (MasterData)
+      const body = JSON.parse(e.postData.contents);
+      result = addData(ss, body);
+    } else if (action === "deleteData") {
+      // Generic Delete
+      const body = JSON.parse(e.postData.contents);
+      result = deleteData(ss, body);
     } else if (action === "ping") {
       result = { status: "online", message: "Sistem NBC Cloud Siap" };
     } else {
@@ -81,10 +93,7 @@ function handleRequest(e) {
     }
 
     return ContentService.createTextOutput(JSON.stringify(result))
-      .setMimeType(ContentService.MimeType.JSON)
-      // GAS tidak support setHeader custom untuk CORS penuh di semua response, 
-      // tapi return JSON biasanya cukup jika client fetch mode 'cors' atau 'no-cors' hati-hati.
-      // Trik: JSONP atau Proxy. Untuk simpel, kita return JSON biasa.
+      .setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({ error: err.toString() }))
       .setMimeType(ContentService.MimeType.JSON);
@@ -110,17 +119,87 @@ function getData(ss, sheetName) {
   return { data: data };
 }
 
+// Get Master Data by Category (or all if no category)
+function getMasterData(ss, category) {
+  const sheet = ss.getSheetByName("MasterData");
+  if (!sheet) return { data: [] }; // Handle if sheet missing
+  
+  const rows = sheet.getDataRange().getValues();
+  const headers = rows[0]; // id, category, content, timestamp
+  
+  let data = rows.slice(1).map(row => {
+    let obj = {};
+    headers.forEach((h, i) => {
+      obj[h] = row[i];
+    });
+    return obj;
+  });
+  
+  if (category) {
+    data = data.filter(item => item.category === category);
+  }
+  
+  return { data: data };
+}
+
+function addUser(ss, body) {
+  const sheet = ss.getSheetByName("Users");
+  const uid = Utilities.getUuid();
+  const timestamp = new Date();
+  sheet.appendRow([uid, body.name, body.role, timestamp]);
+  return { success: true, uid: uid, name: body.name, role: body.role };
+}
+
+function addData(ss, body) {
+  // body: { sheetName (optional, default MasterData), category, content }
+  const sheetName = body.sheetName || "MasterData";
+  const sheet = ss.getSheetByName(sheetName);
+  const id = Utilities.getUuid();
+  const timestamp = new Date();
+  
+  if (sheetName === "MasterData") {
+      // Columns: id, category, content, timestamp
+      sheet.appendRow([id, body.category, body.content, timestamp]);
+  } else {
+      // Fallback for other sheets? usually strict schema is better.
+      return { error: "Unsupported insert target" };
+  }
+  
+  return { success: true, id: id, content: body.content };
+}
+
+function deleteData(ss, body) {
+  // body: { sheetName, id }
+  const sheetName = body.sheetName || "MasterData";
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return { error: "Sheet not found" };
+  
+  const data = sheet.getDataRange().getValues();
+  let rowIndex = -1;
+  const idColIndex = 0; // Assuming ID is always in first column for these tables
+  
+  // Find row by ID
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][idColIndex]) === String(body.id)) {
+      rowIndex = i + 1;
+      break;
+    }
+  }
+  
+  if (rowIndex > 0) {
+    sheet.deleteRow(rowIndex);
+    return { success: true };
+  } else {
+    return { error: "ID not found" };
+  }
+}
+
+
 function getChecklist(ss, dateStr) {
   const sheet = ss.getSheetByName("Checklist");
   const data = sheet.getDataRange().getValues();
-  const headers = data[0];
-  
-  // Filter by date
-  // Column 0 is date usually based on our schema
-  // Header: date, item_id, checked, by, time, timestamp
-  
+  // Filter logic...
   const filtered = data.slice(1).filter(r => {
-    // Convert date object from sheet to string YYYY-MM-DD
     let rDate = r[0];
     if (rDate instanceof Date) {
       rDate = rDate.toISOString().split('T')[0];
@@ -128,7 +207,6 @@ function getChecklist(ss, dateStr) {
     return rDate === dateStr;
   });
   
-  // Convert to map for easy frontend usage: { item_id: { checked: true, by: ... } }
   const map = {};
   filtered.forEach(r => {
     map[r[1]] = {
@@ -142,12 +220,10 @@ function getChecklist(ss, dateStr) {
 }
 
 function updateChecklist(ss, body) {
-  // Body: { date, item_id, checked, by, time }
   const sheet = ss.getSheetByName("Checklist");
   const date = body.date;
   const itemId = body.item_id;
   
-  // Cek jika sudah ada entry untuk date + item_id ini
   const data = sheet.getDataRange().getValues();
   let rowIndex = -1;
   
@@ -156,7 +232,7 @@ function updateChecklist(ss, body) {
     if (rDate instanceof Date) rDate = rDate.toISOString().split('T')[0];
     
     if (rDate === date && data[i][1] === itemId) {
-      rowIndex = i + 1; // 1-based index
+      rowIndex = i + 1; 
       break;
     }
   }
@@ -164,14 +240,11 @@ function updateChecklist(ss, body) {
   const timestamp = new Date();
   
   if (rowIndex > 0) {
-    // Update
-    // Cols: 1=date, 2=item_id, 3=checked, 4=by, 5=time, 6=timestamp
     sheet.getRange(rowIndex, 3).setValue(body.checked);
     sheet.getRange(rowIndex, 4).setValue(body.by);
     sheet.getRange(rowIndex, 5).setValue(body.time);
     sheet.getRange(rowIndex, 6).setValue(timestamp);
   } else {
-    // Insert
     sheet.appendRow([date, itemId, body.checked, body.by, body.time, timestamp]);
   }
   
@@ -180,20 +253,11 @@ function updateChecklist(ss, body) {
 
 function addFinance(ss, body) {
   const sheet = ss.getSheetByName("Finance");
-  // Header: id, date, omzet, ops, gaji, profit, saved_by, timestamp, note
   const id = Utilities.getUuid();
   const timestamp = new Date();
   
   sheet.appendRow([
-    id, 
-    body.date, 
-    body.omzet, 
-    body.ops, 
-    body.gaji, 
-    body.profit, 
-    body.saved_by, 
-    timestamp, 
-    body.note || ''
+    id, body.date, body.omzet, body.ops, body.gaji, body.profit, body.saved_by, timestamp, body.note || ''
   ]);
   
   return { success: true, id: id };

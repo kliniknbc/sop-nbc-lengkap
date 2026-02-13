@@ -1,4 +1,4 @@
-import { Home, ClipboardList, Wallet, Headphones, Megaphone, Users, LogOut, User } from 'lucide-react';
+import { Home, ClipboardList, Wallet, Headphones, Megaphone, Users, LogOut, User, Settings } from 'lucide-react';
 
 export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout, onOpenLogin }) {
   const menuItems = [
@@ -8,6 +8,7 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
     { id: 'cs', label: 'Customer Service', icon: Headphones },
     { id: 'marketing', label: 'Marketing', icon: Megaphone },
     { id: 'sdm', label: 'SDM', icon: Users },
+    { id: 'settings', label: 'Pengaturan', icon: Settings },
   ];
 
   return (
@@ -17,7 +18,7 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
           RUMAH SEHAT <br />
           <span className="text-stone-600 text-lg">Bekam NBC</span>
         </div>
-        
+
         <div className="flex items-center gap-2 mt-4 bg-emerald-50 p-3 rounded-lg border border-emerald-100">
           <div className={`w-2 h-2 rounded-full ${currentUser ? 'bg-emerald-500 animate-pulse' : 'bg-stone-400'}`}></div>
           <div className="flex-1 min-w-0">
@@ -29,13 +30,13 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
             </div>
           </div>
           {currentUser ? (
-             <button onClick={onLogout} title="Keluar" className="text-stone-500 hover:text-red-500 transition">
-               <LogOut size={16} />
-             </button>
+            <button onClick={onLogout} title="Keluar" className="text-stone-500 hover:text-red-500 transition">
+              <LogOut size={16} />
+            </button>
           ) : (
-             <button onClick={onOpenLogin} title="Login" className="text-emerald-600 hover:text-emerald-800 transition">
-               <User size={16} />
-             </button>
+            <button onClick={onOpenLogin} title="Login" className="text-emerald-600 hover:text-emerald-800 transition">
+              <User size={16} />
+            </button>
           )}
         </div>
       </div>
@@ -48,11 +49,10 @@ export default function Sidebar({ activeTab, setActiveTab, currentUser, onLogout
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`w-full text-left px-4 py-3 rounded-lg transition flex items-center gap-3 font-medium ${
-                isActive 
-                  ? 'bg-emerald-50 text-emerald-700 border-r-4 border-emerald-600' 
-                  : 'text-stone-600 hover:bg-stone-50 hover:text-emerald-600'
-              }`}
+              className={`w-full text-left px-4 py-3 rounded-lg transition flex items-center gap-3 font-medium ${isActive
+                ? 'bg-emerald-50 text-emerald-700 border-r-4 border-emerald-600'
+                : 'text-stone-600 hover:bg-stone-50 hover:text-emerald-600'
+                }`}
             >
               <Icon size={20} />
               {item.label}
